@@ -1,49 +1,27 @@
 # Windows System Health Repair
 
-Single-run PowerShell diagnostics and repair for Windows component-store, protected-file and system-drive health.
-
 > **Testing note:** This was tested by me to be working. User experience may vary.
 
-## Included
+## One-click use
 
-`Repair-WindowsSystemHealth.ps1`
+1. Extract the repository.
+2. Double-click `Run-OneClick.bat`.
+3. Approve the Windows administrator prompt.
+4. Allow the complete supported Windows health workflow to finish.
+5. Review the exit code and logs in `C:\ProgramData\WindowsSystemHealthRepair\Logs`.
 
-## Usage
+The launcher runs `Repair-WindowsSystemHealth.ps1` in repair mode directly. There is no menu and Windows is not restarted automatically.
 
-Run diagnostic checks:
+## PowerShell usage
 
 ```powershell
 .\Repair-WindowsSystemHealth.ps1
-```
-
-Run the supported repair sequence:
-
-```powershell
 .\Repair-WindowsSystemHealth.ps1 -Repair
-```
-
-Preview repair actions:
-
-```powershell
 .\Repair-WindowsSystemHealth.ps1 -Repair -WhatIf
 ```
 
-Run PowerShell as Administrator. Timestamped command logs, a transcript and `Results.csv` are stored under:
+The default script mode performs built-in Windows health checks. Repair mode uses the supported component and protected-file repair sequence and records every command result.
 
-```text
-C:\ProgramData\WindowsSystemHealthRepair\Logs
-```
+Exit codes: `0` success, `1` fatal error, `2` one or more warning or failure results.
 
-## Behaviour
-
-The default mode is diagnostic. Repair actions require the explicit `-Repair` parameter, respect `-WhatIf`, and do not restart the computer automatically.
-
-Exit code `0` means success, `1` means a fatal error, and `2` means one or more checks returned a warning or failure result.
-
-## Disclaimer
-
-Use this project at your own risk. Results differ between Windows versions, devices, permissions and policies. Maintain a current backup and review the generated logs.
-
-## License
-
-MIT
+Maintain a current backup and review the generated logs. MIT License.
