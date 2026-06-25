@@ -1,40 +1,107 @@
-<#
-.SYNOPSIS
-Checks and repairs Windows system health with built-in Microsoft tools.
+#requires -Version 5.1
 
-.DESCRIPTION
-Without parameters the script runs DISM CheckHealth, SFC VerifyOnly and an
-online CHKDSK scan. Use -Repair to run DISM RestoreHealth and SFC Scannow.
-Logs are written to ProgramData. No restart is performed automatically.
-#>
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding(SupportsShouldProcess)]
 param(
     [switch]$Repair,
-    [string]$LogRoot = "$env:ProgramData\WindowsSystemHealthRepair\Logs"
+    [ValidateNotNullOrEmpty()][string]$LogRoot = "$env:ProgramData\WindowsSystemHealthRepair\Logs"
 )
 
-Set-StrictMode -Version 2.0
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $runPath = Join-Path $LogRoot (Get-Date -Format 'yyyyMMdd_HHmmss')
-$summary = New-Object System.Collections.Generic.List[object]
-$transcript = $false
+$results = New-Object System.Collections.Generic.List[object]
+$transcriptStarted = $false
 
 function Test-Admin {
-    $current = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($current)
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Run-Tool {
-    param([string]$Name, [string]$Command, [string[]]$Arguments)
+function Get-DismClassification([int]$ExitCode,[string]$Text,[string]$Mode) {
+    if ($ExitCode -eq 3010) {
+        return [pscustomobject]@{Status='RestartRequired';Details='DISM completed and requires a restart.'}
+    }
+    if ($ExitCode -ne 0) {
+        return [pscustomobject]@{Status='Fail';Details="DISM returned exit code $ExitCode."}
+    }
+    if ($Text -match '(?i)component store corruption detected|component store is repairable') {
+        if ($Mode -eq 'CheckHealth') {
+            return [pscustomobject]@{Status='Warning';Details='The component store is repairable.'}
+        }
+    }
+    if ($Text -match '(?i)component store cannot be repaired') {
+        return [pscustomobject]@{Status='Fail';Details='DISM reports that the component store cannot be repaired.'}
+    }
+    if ($Text -match '(?i)restore operation completed successfully') {
+        return [pscustomobject]@{Status='Repaired';Details='DISM RestoreHealth completed successfully.'}
+    }
+    if ($Text -match '(?i)no component store corruption detected|operation completed successfully') {
+        return [pscustomobject]@{Status='Pass';Details='DISM completed successfully with no unresolved corruption reported.'}
+    }
+    return [pscustomobject]@{Status='Unknown';Details='DISM returned success but its result text was not recognized. Review the log.'}
+}
+
+function Get-SfcClassification([int]$ExitCode,[string]$Text) {
+    if ($ExitCode -ne 0) {
+        return [pscustomobject]@{Status='Fail';Details="SFC returned exit code $ExitCode."}
+    }
+    if ($Text -match '(?i)did not find any integrity violations') {
+        return [pscustomobject]@{Status='Pass';Details='Windows Resource Protection found no integrity violations.'}
+    }
+    if ($Text -match '(?i)found corrupt files and successfully repaired') {
+        return [pscustomobject]@{Status='Repaired';Details='SFC repaired corrupt protected files.'}
+    }
+    if ($Text -match '(?i)found corrupt files but was unable to fix') {
+        return [pscustomobject]@{Status='Fail';Details='SFC could not repair all corrupt files.'}
+    }
+    if ($Text -match '(?i)could not perform the requested operation|there is a system repair pending') {
+        return [pscustomobject]@{Status='Fail';Details='SFC could not complete the requested operation.'}
+    }
+    return [pscustomobject]@{Status='Unknown';Details='SFC completed but its localized/result text was not recognized. Review the log.'}
+}
+
+function Get-ChkdskClassification([int]$ExitCode,[string]$Text) {
+    if ($Text -match '(?i)found no problems|no further action is required') {
+        return [pscustomobject]@{Status='Pass';Details='CHKDSK found no file-system problems.'}
+    }
+    if ($Text -match '(?i)found problems and successfully fixed them online') {
+        return [pscustomobject]@{Status='Repaired';Details='CHKDSK repaired file-system problems online.'}
+    }
+    if ($Text -match '(?i)must be fixed offline|spotfix|schedule.*restart|cannot run because the volume is in use') {
+        return [pscustomobject]@{Status='RestartRequired';Details='CHKDSK reports that offline repair or a restart is required.'}
+    }
+    if ($ExitCode -ge 3) {
+        return [pscustomobject]@{Status='Fail';Details="CHKDSK returned exit code $ExitCode."}
+    }
+    if ($ExitCode -in 1,2) {
+        return [pscustomobject]@{Status='Warning';Details="CHKDSK returned exit code $ExitCode; review the output for repairs or follow-up."}
+    }
+    return [pscustomobject]@{Status='Unknown';Details='CHKDSK completed but its result text was not recognized. Review the log.'}
+}
+
+function Invoke-HealthTool {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Command,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][scriptblock]$Classifier
+    )
+
     $log = Join-Path $runPath (($Name -replace '[^A-Za-z0-9-]','_') + '.log')
-    Write-Host "[INFO] $Name" -ForegroundColor Cyan
-    & $Command @Arguments 2>&1 | Tee-Object -FilePath $log
-    $code = $LASTEXITCODE
-    $script:summary.Add([pscustomobject]@{
+    Write-Host "[INFO] $Name"
+    $output = @(& $Command @Arguments 2>&1)
+    $exitCode = $LASTEXITCODE
+    $output | Out-File -LiteralPath $log -Encoding UTF8 -Width 4096
+    $output | ForEach-Object { Write-Output $_ }
+    $text = $output -join [Environment]::NewLine
+    $classification = & $Classifier $exitCode $text
+
+    $results.Add([pscustomobject]@{
         Check = $Name
-        ExitCode = $code
-        Successful = ($code -in 0,3010)
+        ExitCode = $exitCode
+        Status = $classification.Status
+        Details = $classification.Details
         Log = $log
     })
 }
@@ -45,39 +112,58 @@ try {
 
     New-Item -Path $runPath -ItemType Directory -Force | Out-Null
     Start-Transcript -Path (Join-Path $runPath 'Transcript.txt') -Force | Out-Null
-    $transcript = $true
+    $transcriptStarted = $true
 
-    Run-Tool 'DISM CheckHealth' 'dism.exe' @('/Online','/Cleanup-Image','/CheckHealth','/NoRestart')
+    Invoke-HealthTool 'DISM CheckHealth' 'dism.exe' @('/Online','/Cleanup-Image','/CheckHealth','/NoRestart') {
+        param($code,$text)
+        Get-DismClassification $code $text 'CheckHealth'
+    }
 
     if ($Repair) {
-        if ($PSCmdlet.ShouldProcess('Windows component store','DISM RestoreHealth')) {
-            Run-Tool 'DISM RestoreHealth' 'dism.exe' @('/Online','/Cleanup-Image','/RestoreHealth','/NoRestart')
+        if ($PSCmdlet.ShouldProcess('Windows component store','Run DISM RestoreHealth')) {
+            Invoke-HealthTool 'DISM RestoreHealth' 'dism.exe' @('/Online','/Cleanup-Image','/RestoreHealth','/NoRestart') {
+                param($code,$text)
+                Get-DismClassification $code $text 'RestoreHealth'
+            }
         }
-        if ($PSCmdlet.ShouldProcess('Protected Windows files','SFC Scannow')) {
-            Run-Tool 'SFC Scannow' 'sfc.exe' @('/scannow')
+        if ($PSCmdlet.ShouldProcess('Protected Windows files','Run SFC Scannow')) {
+            Invoke-HealthTool 'SFC Scannow' 'sfc.exe' @('/scannow') {
+                param($code,$text)
+                Get-SfcClassification $code $text
+            }
         }
     }
     else {
-        Run-Tool 'SFC VerifyOnly' 'sfc.exe' @('/verifyonly')
+        Invoke-HealthTool 'SFC VerifyOnly' 'sfc.exe' @('/verifyonly') {
+            param($code,$text)
+            Get-SfcClassification $code $text
+        }
     }
 
-    Run-Tool 'CHKDSK Scan' 'chkdsk.exe' @($env:SystemDrive,'/scan')
+    Invoke-HealthTool 'CHKDSK Scan' 'chkdsk.exe' @($env:SystemDrive,'/scan') {
+        param($code,$text)
+        Get-ChkdskClassification $code $text
+    }
 
-    $summary | Export-Csv -Path (Join-Path $runPath 'Results.csv') -NoTypeInformation -Encoding UTF8
-    $failed = @($summary | Where-Object { -not $_.Successful })
+    $results | Export-Csv (Join-Path $runPath 'Results.csv') -NoTypeInformation -Encoding UTF8
+    $results | ConvertTo-Json -Depth 4 | Out-File (Join-Path $runPath 'Results.json') -Encoding UTF8
 
-    if ($transcript) { Stop-Transcript | Out-Null; $transcript = $false }
+    if ($transcriptStarted) {
+        Stop-Transcript | Out-Null
+        $transcriptStarted = $false
+    }
 
-    if ($failed.Count -gt 0) {
-        Write-Host "[WARN] Completed with $($failed.Count) warning(s). Review $runPath" -ForegroundColor Yellow
+    $review = @($results | Where-Object { $_.Status -in @('Warning','Fail','Unknown','RestartRequired') })
+    if ($review.Count -gt 0) {
+        Write-Warning "$($review.Count) result(s) require review. Logs: $runPath"
         exit 2
     }
 
-    Write-Host "[OK] Completed successfully. Logs: $runPath" -ForegroundColor Green
+    Write-Host "[OK] Completed successfully. Logs: $runPath"
     exit 0
 }
 catch {
-    if ($transcript) { try { Stop-Transcript | Out-Null } catch { } }
+    if ($transcriptStarted) { try { Stop-Transcript | Out-Null } catch {} }
     Write-Error $_.Exception.Message
     exit 1
 }
