@@ -1,27 +1,58 @@
 # Windows System Health Repair
 
-> **Testing note:** This was tested by me to be working. User experience may vary.
+PowerShell checks and supported repair actions using DISM, SFC and CHKDSK.
 
 ## One-click use
 
 1. Extract the repository.
 2. Double-click `Run-OneClick.bat`.
-3. Approve the Windows administrator prompt.
-4. Allow the complete supported Windows health workflow to finish.
-5. Review the exit code and logs in `C:\ProgramData\WindowsSystemHealthRepair\Logs`.
+3. Approve the administrator prompt.
+4. Review logs under `C:\ProgramData\WindowsSystemHealthRepair\Logs`.
 
-The launcher runs `Repair-WindowsSystemHealth.ps1` in repair mode directly. There is no menu and Windows is not restarted automatically.
+The launcher runs repair mode. It never restarts Windows automatically.
 
-## PowerShell usage
+## Usage
 
 ```powershell
+# Checks only
 .\Repair-WindowsSystemHealth.ps1
+
+# Repair mode
 .\Repair-WindowsSystemHealth.ps1 -Repair
+
+# Preview
 .\Repair-WindowsSystemHealth.ps1 -Repair -WhatIf
 ```
 
-The default script mode performs built-in Windows health checks. Repair mode uses the supported component and protected-file repair sequence and records every command result.
+## Results
 
-Exit codes: `0` success, `1` fatal error, `2` one or more warning or failure results.
+The script records each command's full output and classifies DISM, SFC and CHKDSK separately.
 
-Maintain a current backup and review the generated logs. MIT License.
+| Status | Meaning |
+|---|---|
+| `Pass` | No issue reported |
+| `Repaired` | The tool reports a successful repair |
+| `RestartRequired` | Offline work or a Windows restart is required |
+| `Warning` | Follow-up review is required |
+| `Fail` | The command failed or left an unresolved issue |
+| `Unknown` | The command completed but its result text was not recognized reliably |
+
+Known English result messages are classified. Localized or unexpected output becomes `Unknown` rather than a false pass.
+
+Each run creates individual command logs, `Results.csv`, `Results.json` and a transcript.
+
+## Exit codes
+
+| Code | Meaning |
+|---:|---|
+| `0` | Every result is Pass or Repaired |
+| `1` | Fatal script error |
+| `2` | Warning, Fail, Unknown or RestartRequired result present |
+
+## Validation
+
+GitHub Actions uses PowerShell's native parser and PSScriptAnalyzer for every pull request and push to `main`.
+
+## License
+
+MIT License.
